@@ -15,8 +15,8 @@
 | 账号 | 角色 | 页面和操作 |
 |---|---|---|
 | `operator` | 值班调度员 | 登记靠泊申请，修订未确认计划，预约拖轮，登记已确认申请的 VHF 延误 |
-| `supervisor` | 调度主管 | 具备调度员操作，可发布潮窗、确认靠泊、重试、签署分类、发布指令及复盘结案 |
-| `viewer` | 观察员 | 查询潮窗、申请、预约、案件、指令和审计记录 |
+| `supervisor` | 调度主管 | 具备调度员操作，可发布潮窗、确认靠泊、重试、签署分类、发布指令、复盘结案、按原版本重算及管理模型版本 |
+| `viewer` | 观察员 | 查询潮窗、申请、预约、案件、指令、模型版本和审计记录 |
 
 三个本地演示账号的口令均为 `Harbor1074!`。
 
@@ -60,15 +60,29 @@ docker compose exec -T backend python -m scripts.seed_demo
 - 确认靠泊要求整个操纵区间都落在潮窗内、吃水不超限、拖轮预约与计划吻合、同泊位无其他已确认的重叠操纵。区间采用左闭右开口径。改期释放之前的拖轮预约，并保留历史记录。
 - 四项模型输入为引航偏离、潮窗结束余量、实测风速、拖轮等候。创建案件时冻结输入并生成 SHA-256。固定种子 `1074` 生成 720 条训练样本与独立生成的 240 条验证样本。`StandardScaler` 将训练特征中心化、缩放，再以 `SVC(kernel='rbf', C=1.7, gamma='scale')` 拟合。二分类用 `decision_function` 的符号提供建议，`|f(x)| ≤ 0.30` 进入人工复核。平衡准确率为两类召回率的均值。模型结果保留支持向量数、合成验证指标、参数和版本。
 - worker 使用 MySQL 待处理状态和行锁领取案件，Redis 唤醒丢失时继续扫描。计算失败写入错误，主管可以沿用冻结摘要重试。成功后原模型建议持续保留，模型签署与人工签署有不同的记录字段。
+
+## 模型版本治理
+
+模型按版本留存为带 SHA-256 摘要的产物文件（`artifacts` 卷下 `models/model-<版本>.pkl`），并在 `model_versions` 登记 `staged / active / retired / damaged` 状态。版本规则如下：
+
+1. **旧案按当时模型重算**：每条延误案件在登记时绑定当前接单版本（`delay_incidents.model_version`），原始分数、人工签署和调度指令持续保留。结案后主管可在调度复盘页用**同一绑定版本**重算，页面并列展示原分与重算分及一致性结论，重算只追加记录、不改原判。
+2. **切换失败保留旧版接单**：新版先训练留存为 `staged` 并通过装载与控制点校验，主管显式激活后才接新案。激活在数据库保存点内完成；校验失败时新版标记 `damaged`、切换回滚，旧 `active` 版本继续接单。
+3. **排队案件按登记版本算**：案件入队即固化版本，worker 只装载该版本的产物；版本切换不影响在队案件。
+4. **失败重试不改版本**：计算失败（含绑定产物缺失或损坏）的案件重试时沿用冻结输入和原绑定版本，审计记录明确不换版本。
+5. **无法复现就明示，不用新版补算**：绑定版本产物损坏或未留存时，重算与计算都返回「无法按登记版本复现」，保留原判与原指令，绝不回退到当前新版。
+
+模型版本管理在「模型版本」页完成：主管登记新版本号与训练种子，查看指标与摘要后校验并激活；观察员可只读查看。基线模型 `v1` 在首次启动时自动留存并激活。
+
 - 已确认的计划冻结。调度指令支持跟踪、待命、通知改期。改期指令是发给引航席的交班记录，现场后续排程由引航席另行协调。模型指标源于合成数据，现场岗位发布的动作和实绩通过表单登记。
 
 ## 代码位置
 
 - `backend/src/models.py` 定义实体与数据库约束，`schemas.py` 定义操作数据。`main.py` 首次启动建表，`backend/migrations/README.md` 记录建库入口。
-- `planning.py` 处理资源预约、撤销与确认，`incidents.py` 处理案件、签署、调度与复盘。`routes.py` 接入 JWT 权限和事务。`main.py` 提供请求跟踪、响应策略及全局业务错误处理。
-- `classifier.py` 和 `worker.py` 完成异步分类。`backend/scripts/seed_demo.py` 建立可演示班次。
-- `frontend/src/api.js` 对接接口，`store.js` 保存值班会话和班次数据，`planning.js` 和 `incidents.js` 提供业务页面，`ui.js` 复用状态标签、编辑表单、交班时间线和格式化函数。
-- 角色、申请状态、案件状态、分类和动作枚举在 `backend/src/models.py` 与 `frontend/src/store.js` 定义。后端 `schemas.py`、`security.py`、`routes.py`、`planning.py`、`incidents.py`、`worker.py` 与 `seed_demo.py` 消费上述枚举，分类器持久化两类预测标签。前端 `app.js`、`planning.js` 与 `incidents.js` 消费相同的 API 值。
+- `planning.py` 处理资源预约、撤销与确认，`incidents.py` 处理案件、签署、调度、复盘与按原版本重算，`model_registry.py` 处理模型产物留存、校验、损坏标记与版本切换。`routes.py` 接入 JWT 权限和事务。`main.py` 提供请求跟踪、响应策略及全局业务错误处理。
+- `classifier.py` 和 `worker.py` 完成版本化异步分类，worker 只装载案件绑定版本的产物。`backend/scripts/seed_demo.py` 建立可演示班次。
+- `frontend/src/api.js` 对接接口，`store.js` 保存值班会话和班次数据，`planning.js`、`incidents.js` 与 `models.js` 提供业务页面与模型版本登记册，`ui.js` 复用状态标签、编辑表单、交班时间线和格式化函数。
+- 角色、申请状态、案件状态、分类、动作与模型状态枚举在 `backend/src/models.py` 与 `frontend/src/store.js` 定义。后端 `schemas.py`、`security.py`、`routes.py`、`planning.py`、`incidents.py`、`model_registry.py`、`worker.py` 与 `seed_demo.py` 消费上述枚举，分类器持久化两类预测标签。前端 `app.js`、`planning.js`、`incidents.js` 与 `models.js` 消费相同的 API 值。
+- 版本治理的端到端规则在 `backend/tests/test_versioning.py`（SQLite 替身，无需 MySQL/Redis）：`python tests/test_versioning.py`。
 
 License: MIT，见 `LICENSE`。
 

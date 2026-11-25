@@ -37,6 +37,13 @@ class Action(StrEnum):
     STANDBY = 'standby'
 
 
+class ModelState(StrEnum):
+    STAGED = 'staged'        # 已留存待校验，不接新案
+    ACTIVE = 'active'        # 当前接单版本
+    RETIRED = 'retired'      # 不再接单，旧案仍可用其重算
+    DAMAGED = 'damaged'      # 产物缺失或损坏，无法复现
+
+
 def enum(kind):
     return Enum(kind, values_callable=lambda members: [member.value for member in members])
 
@@ -106,6 +113,22 @@ class TugAssignment(Base):
     released_at = mapped_column(DateTime)
 
 
+class ModelVersion(Base):
+    __tablename__ = 'model_versions'
+    code = mapped_column(String(32), primary_key=True)
+    state = mapped_column(enum(ModelState), nullable=False, index=True)
+    seed = mapped_column(Integer, nullable=False)
+    parameters = mapped_column(JSON, nullable=False)
+    metrics = mapped_column(JSON, nullable=False)
+    sklearn_version = mapped_column(String(32), nullable=False)
+    artifact_path = mapped_column(String(200), nullable=False)
+    artifact_digest = mapped_column(String(64), nullable=False)
+    note = mapped_column(String(300), nullable=False, default='')
+    created_by = mapped_column(ForeignKey('users.username'), nullable=False)
+    created_at = mapped_column(DateTime, nullable=False)
+    activated_at = mapped_column(DateTime)
+
+
 class DelayIncident(Base):
     __tablename__ = 'delay_incidents'
     code = mapped_column(String(32), primary_key=True)
@@ -116,9 +139,15 @@ class DelayIncident(Base):
     state = mapped_column(enum(IncidentState), nullable=False, default=IncidentState.QUEUED, index=True)
     features = mapped_column(JSON, nullable=False)
     input_digest = mapped_column(String(64), nullable=False)
+    # 登记时绑定的模型版本；排队与重试都不允许改换版本。
+    model_version = mapped_column(String(32), nullable=False)
     result = mapped_column(JSON)
     error = mapped_column(String(180))
     attempts = mapped_column(Integer, nullable=False, default=0)
+    # 结案后复盘页的按原版本重算记录，与原始结果并列，不覆盖原判。
+    recompute = mapped_column(JSON)
+    recompute_error = mapped_column(String(180))
+    recompute_at = mapped_column(DateTime)
     decision = mapped_column(enum(DelayClass))
     decided_by = mapped_column(ForeignKey('users.username'))
     decision_reason = mapped_column(String(300))

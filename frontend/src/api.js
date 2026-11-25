@@ -33,4 +33,8 @@ export const api = {
   dispatch: (code, data) => request(`/delay-incidents/${encodeURIComponent(code)}/dispatch`, 'POST', data),
   close: (code, data) => request(`/delay-incidents/${encodeURIComponent(code)}/close`, 'POST', data),
   retry: code => request(`/delay-incidents/${encodeURIComponent(code)}/retry`, 'POST'),
+  recompute: code => request(`/delay-incidents/${encodeURIComponent(code)}/recompute`, 'POST'),
+  modelVersions: () => request('/model-versions'),
+  stageModel: data => request('/model-versions', 'POST', data),
+  activateModel: code => request(`/model-versions/${encodeURIComponent(code)}/activate`, 'POST'),
 };

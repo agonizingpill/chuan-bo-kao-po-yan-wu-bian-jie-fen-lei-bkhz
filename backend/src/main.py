@@ -13,6 +13,7 @@ from scripts.seed_demo import seed
 
 from .operations_evidence import router as operations_evidence
 from .database import Session, engine, queue, setting
+from .model_registry import ensure_baseline
 from .models import Base
 from .planning import Rejected, audit
 from .routes import router
@@ -23,6 +24,10 @@ log = logging.getLogger('uvicorn.error')
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)
+    with Session.begin() as db:
+        version, created = ensure_baseline(db)
+        if created:
+            log.info('Baseline model %s activated', version.code)
     if setting('SEED_DEMO', 'true').lower() == 'true':
         try:
             log.info('Demo seed %s', seed())

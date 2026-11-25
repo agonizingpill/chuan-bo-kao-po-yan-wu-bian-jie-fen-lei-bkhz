@@ -36,6 +36,9 @@ export const eventNames = {
   INCIDENT_QUEUED: '登记现场延误', INCIDENT_REQUEUED: '重试模型', MODEL_FAILED: '模型计算失败', MODEL_CLASSIFIED: '模型分类',
   MARGIN_REVIEWED: '主管签署分类', MARGIN_REVIEW_REQUIRED: '间隔带未复核', ACTION_ISSUED: '发布调度指令', REVIEW_CLOSED: '完成复盘',
   PRIORITY_ACTION_REQUIRED: '处置级别不符', ALL_FAST_TIME: '复盘时间不符',
+  MODEL_STAGED: '新版模型留存', MODEL_VERIFIED: '新版模型校验通过', MODEL_ACTIVATED: '激活接单模型',
+  MODEL_RETIRED: '旧版停用留存', MODEL_DAMAGED: '模型校验失败', MODEL_BUILD_FAILED: '模型训练失败',
+  RECOMPUTE_MATCHED: '重算与原分一致', RECOMPUTE_MISMATCH: '重算与原分不一致', RECOMPUTE_UNAVAILABLE: '旧模型无法复现',
 };
 
 export function journal(events) {

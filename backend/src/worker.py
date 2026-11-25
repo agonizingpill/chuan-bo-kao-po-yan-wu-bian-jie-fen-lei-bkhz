@@ -6,7 +6,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from .classifier import classify
+from . import classifier, model_registry
 from .database import Session, WAKE_QUEUE, queue
 from .models import DelayClass, DelayIncident, IncidentState
 from .planning import audit
@@ -23,7 +23,16 @@ def process_next():
             return False
         incident.attempts += 1
         try:
-            result = classify(incident.features, incident.input_digest)
+            # 始终装载案件登记时绑定的版本；产物缺失/损坏时失败留待重试，不切换新版。
+            loaded = model_registry.load_version(incident.model_version)
+            result = classifier.score(loaded, incident.features, incident.input_digest)
+        except classifier.ModelUnavailable as exc:
+            log.exception('Bound model unavailable for %s', incident.code)
+            incident.state = IncidentState.FAILED
+            incident.error = str(exc)[:180]
+            audit(db, 'worker', incident.code, 'MODEL_FAILED',
+                  f'{incident.error} · 保留绑定版本 {incident.model_version}')
+            return True
         except Exception as exc:
             log.exception('Classification failed for %s', incident.code)
             incident.state = IncidentState.FAILED
@@ -34,7 +43,8 @@ def process_next():
         incident.state = IncidentState.MARGIN_REVIEW if result['needs_review'] else IncidentState.READY
         if incident.state == IncidentState.READY:
             incident.decision = DelayClass(result['prediction'])
-        audit(db, 'worker', incident.code, 'MODEL_CLASSIFIED', f"f(x)={result['score']:+.5f} · {incident.state}")
+        audit(db, 'worker', incident.code, 'MODEL_CLASSIFIED',
+              f"{incident.model_version} · f(x)={result['score']:+.5f} · {incident.state}")
         log.info('%s %s', incident.code, incident.state)
         return True
 

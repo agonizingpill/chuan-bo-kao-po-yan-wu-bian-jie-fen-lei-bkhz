@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, NaiveDatetime, StringConstrai
 from .models import Action, DelayClass
 
 Code = Annotated[str, StringConstraints(pattern=r'^[A-Z0-9][A-Z0-9-]{1,31}$')]
+ModelCode = Annotated[str, StringConstraints(pattern=r'^[A-Za-z0-9][A-Za-z0-9-]{1,31}$')]
 Name = Annotated[str, StringConstraints(min_length=2, max_length=80)]
 Note = Annotated[str, StringConstraints(min_length=5, max_length=300)]
 
@@ -73,3 +74,9 @@ class DispatchInput(Payload):
 class CloseInput(Payload):
     all_fast_at: NaiveDatetime
     outcome: Note
+
+
+class ModelVersionInput(Payload):
+    code: ModelCode
+    seed: int = Field(ge=1, le=10_000_000)
+    note: str = Field(min_length=2, max=300)

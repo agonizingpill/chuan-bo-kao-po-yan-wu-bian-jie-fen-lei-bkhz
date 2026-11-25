@@ -8,6 +8,7 @@ x-python: &python
     MYSQL_PASSWORD: ${MYSQL_PASSWORD:-berth_local}
     JWT_SECRET: ${JWT_SECRET:-private-demo-berth-local-1074-for-development}
     SEED_DEMO: ${SEED_DEMO:-true}
+    MODEL_ARTIFACT_DIR: ${MODEL_ARTIFACT_DIR:-/var/berth/models}
     OPENBLAS_NUM_THREADS: '1'
     OMP_NUM_THREADS: '1'
   volumes: [artifacts:/var/berth]

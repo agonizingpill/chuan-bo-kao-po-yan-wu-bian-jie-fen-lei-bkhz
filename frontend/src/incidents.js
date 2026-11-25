@@ -16,15 +16,35 @@ function caseIntake() {
 
 function boundary(result) {
   if (!result) return '';
-  const {score, band, prediction, metrics} = result;
+  const {score, band, prediction, metrics, model_version} = result;
   const extent = Math.max(1.2, Math.ceil(Math.abs(score) * 10 + 1) / 10);
   const left = (score / extent + 1) * 50;
   const signed = `${score >= 0 ? '+' : '−'}${Math.abs(score).toFixed(4)}`;
   return `<div class="boundary"><div class="section-head"><h3>模型决策分数 f(x)</h3><strong class="score mono">${signed}</strong></div>
   <div class="decision-chart" style="--pointer:${left}%;--half-band:${band * 50 / extent}%"><div class="axis"></div><div class="review-band"></div><div class="axis-center"></div><div class="score-pointer" title="${signed}"></div></div>
   <div class="axis-labels"><span>常规侧</span><b>±${band.toFixed(2)} 人工复核带</b><span>优先侧</span></div>
-  <p class="model-note">模型建议 <strong>${esc(decisions[prediction])}</strong> · 合成验证集平衡准确率 ${(metrics.balanced_accuracy * 100).toFixed(1)}%</p>
+  <p class="model-note">模型版本 <strong class="mono">${esc(model_version || '—')}</strong> · 建议 <strong>${esc(decisions[prediction])}</strong> · 合成验证集平衡准确率 ${(metrics.balanced_accuracy * 100).toFixed(1)}%</p>
   <details class="model-details"><summary>计算记录</summary><dl class="measurements"><div><dt>训练 / 验证</dt><dd>${metrics.train_rows} / ${metrics.validation_rows}</dd></div><div><dt>固定种子</dt><dd>${result.seed}</dd></div><div><dt>支持向量数</dt><dd>${metrics.support_vectors}</dd></div></dl><p class="digest">SHA-256 ${esc(result.input_digest)}</p></details></div>`;
+}
+
+function recomputePanel(incident) {
+  if (incident.state !== 'closed') return '';
+  const original = incident.result?.score;
+  const check = incident.recompute;
+  let body;
+  if (incident.recompute_error) {
+    body = `<p class="warning">无法复现：${esc(incident.recompute_error)}</p>
+      <p class="muted">登记版本 <strong class="mono">${esc(incident.model_version)}</strong> 的产物损坏或未留存，不以新版补算；原判与指令继续保留。</p>`;
+  } else if (check) {
+    const same = check.matches_original;
+    body = `<dl class="measurements recompute-grid"><div><dt>原始分数（${esc(incident.model_version)}）</dt><dd class="mono">${original >= 0 ? '+' : '−'}${Math.abs(original).toFixed(5)}</dd></div>
+      <div><dt>重算分数（${esc(check.model_version)}）</dt><dd class="mono">${check.score >= 0 ? '+' : '−'}${Math.abs(check.score).toFixed(5)}</dd></div></dl>
+      <p class="${same ? 'clearance' : 'warning'}">${same ? '重算与原分一致，原判与指令保留。' : '重算与原分不一致，仍以原判和原指令为准。'}</p>
+      <p class="digest">重算产物 SHA-256 ${esc(check.artifact_digest)}</p>`;
+  } else {
+    body = `<p class="muted">结案后可用登记时的模型版本 <strong class="mono">${esc(incident.model_version)}</strong> 重算核对；重算不会改写原判与指令。</p>`;
+  }
+  return `<section class="panel recompute"><div class="section-head"><h3>复盘分数核对</h3>${supervisor() && (!check || incident.recompute_error) ? form('recompute', incident.code, '', incident.recompute_error ? '重新按原版本重算' : '按原版本重算') : ''}</div>${body}</section>`;
 }
 
 function actionsFor(incident) {
@@ -48,6 +68,7 @@ function incidentDetail(incident) {
   const action = store.data.reviews.find(r => r.incident_code === incident.code);
   return `<header class="subhead"><div><div class="reference mono">${esc(incident.code)} / <a href="#schedule/${esc(request.code)}">${esc(request.code)}</a></div><h2>${esc(request.vessel)}</h2></div>${pill(incident.state, incidentStates)}</header>
     <p class="event-note"><span>${esc(incident.radio_reference)} · ${esc(portDate(incident.observed_at))}</span>${esc(incident.event_note)}</p>
+    <p class="model-note">登记时绑定模型版本 <strong class="mono">${esc(incident.model_version)}</strong>，排队与重试均不改换版本。</p>
     <dl class="feature-list">${Object.entries(features).map(([key, label]) => `<div><dt>${label}</dt><dd>${esc(incident.features[key])}</dd></div>`).join('')}</dl>
     ${incident.state === 'queued' ? '<p class="clearance" role="status">后台正在计算冻结观测，完成后自动更新。</p>' : ''}
     ${incident.error ? `<p class="warning">${esc(incident.error)}</p>` : ''}
@@ -78,6 +99,7 @@ export function reviews(code) {
       <dl class="measurements"><div><dt>原计划引航</dt><dd>${esc(portDate(request.eta))}</dd></div><div><dt>延误观测</dt><dd>${esc(portDate(incident.observed_at))}</dd></div><div><dt>全缆系妥</dt><dd>${esc(portDate(record.all_fast_at))}</dd></div></dl>
       ${record.closed_at ? `<p class="clearance"><strong>结案人 ${esc(record.closed_by)}</strong> · ${esc(record.outcome)}</p>` : supervisor() ? form('close', code, `<h3>补登作业实绩</h3>${field('全缆系妥时刻', 'all_fast_at', 'datetime-local', '', `min="${esc(timeInput(incident.observed_at))}"`)}
         ${notes('复盘纪要', 'outcome', '写明指令执行结果、交接人及改进项。')}`, '保存实绩并结案') : '<p class="muted">等待主管补登作业实绩。</p>'}
+      ${record.closed_at ? recomputePanel(incident) : ''}
       <h3>交接与核验记录</h3>${journal(store.history)}`;
   }
   return `${title('调度复盘', '把处置指令、现场实绩和交接原因留在同一案件。')}

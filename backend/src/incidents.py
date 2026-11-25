@@ -4,6 +4,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session as DatabaseSession
 
+from . import classifier, model_registry
 from .classifier import snapshot_digest
 from .database import WAKE_QUEUE, queue
 from .models import Action, BerthRequest, DelayClass, DelayIncident, DispatchReview, IncidentState, RequestState
@@ -40,11 +41,15 @@ def report(db: DatabaseSession, actor: str, data: IncidentInput):
         'eta_offset_min': round(offset, 3), 'tide_reserve_min': round(reserve, 3),
         'wind_kn': data.wind_kn, 'tug_wait_min': data.tug_wait_min,
     }
+    # 排队案件按登记时刻的接单版本算；该绑定随后续重试保持不变。
+    version = model_registry.active_version(db)
     incident = DelayIncident(code=data.code, request_code=request.code, radio_reference=data.radio_reference,
                              observed_at=data.observed_at, event_note=data.event_note, features=features,
-                             input_digest=snapshot_digest(features), state=IncidentState.QUEUED)
+                             input_digest=snapshot_digest(features), model_version=version.code,
+                             state=IncidentState.QUEUED)
     db.add(incident)
-    audit(db, actor, incident.code, 'INCIDENT_QUEUED', f'{request.code} · {incident.radio_reference}')
+    audit(db, actor, incident.code, 'INCIDENT_QUEUED',
+          f'{request.code} · {incident.radio_reference} · 绑定模型 {version.code}')
     return incident
 
 
@@ -54,7 +59,8 @@ def retry(db: DatabaseSession, actor: str, code: str):
         raise Rejected('RETRY_STATE', '只有计算失败的案件可以重试', code)
     incident.state = IncidentState.QUEUED
     incident.error = None
-    audit(db, actor, code, 'INCIDENT_REQUEUED', f'复用输入摘要 {incident.input_digest}')
+    audit(db, actor, code, 'INCIDENT_REQUEUED',
+          f'复用输入摘要 {incident.input_digest} · 仍按登记版本 {incident.model_version}，重试不改换版本')
     return incident
 
 
@@ -102,3 +108,39 @@ def close(db: DatabaseSession, actor: str, code: str, data: CloseInput):
     request.state = RequestState.COMPLETED
     audit(db, actor, code, 'REVIEW_CLOSED', f'{data.all_fast_at:%m-%d %H:%M} · {data.outcome}')
     return record
+
+
+def recompute_score(db: DatabaseSession, actor: str, code: str):
+    """结案复盘：用案件登记时绑定的同一模型版本重算冻结输入。
+
+    只追加核对记录，不改写原始结果、人工签署与调度指令；
+    旧模型损坏或未留存时明确标注无法复现，绝不以当前新版补算。
+    """
+    incident = find(db, DelayIncident, code, lock=True)
+    if incident.state != IncidentState.CLOSED:
+        raise Rejected('RECOMPUTE_STATE', '只有已结案案件可在复盘页核对重算分数', code)
+    if not incident.result:
+        raise Rejected('ORIGINAL_SCORE_MISSING', '原模型分数缺失，无法建立原分与重算分对照', code)
+    try:
+        loaded = model_registry.load_version(incident.model_version)
+        check = classifier.score(loaded, incident.features, incident.input_digest)
+    except classifier.ModelUnavailable as exc:
+        incident.recompute = None
+        incident.recompute_error = str(exc)[:180]
+        incident.recompute_at = utc_now()
+        audit(db, actor, code, 'RECOMPUTE_UNAVAILABLE',
+              f"登记版本 {incident.model_version} 无法复现：{incident.recompute_error}")
+        return incident
+    original = float(incident.result['score'])
+    check['matches_original'] = abs(check['score'] - original) <= 1e-9
+    check['original_score'] = original
+    incident.recompute = check
+    incident.recompute_error = None
+    incident.recompute_at = utc_now()
+    if not check['matches_original']:
+        audit(db, actor, code, 'RECOMPUTE_MISMATCH',
+              f"原分 {original:+.5f} 与重算 {check['score']:+.5f} 不一致；保留原判与指令")
+    else:
+        audit(db, actor, code, 'RECOMPUTE_MATCHED',
+              f"版本 {incident.model_version} 重算 {check['score']:+.5f} 与原分一致，原判与指令保留")
+    return incident

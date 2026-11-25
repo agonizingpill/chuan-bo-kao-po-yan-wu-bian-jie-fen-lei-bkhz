@@ -3,10 +3,10 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
-from . import incidents, planning
+from . import incidents, model_registry, planning
 from .database import Session
-from .models import Audit, Berth, BerthRequest, DelayIncident, DispatchReview, Role, TideWindow, Tug, TugAssignment, User
-from .schemas import AssignTug, CloseInput, DispatchInput, IncidentInput, Login, MarginDecision, RequestInput, Schedule, TideInput
+from .models import Audit, Berth, BerthRequest, DelayIncident, DispatchReview, ModelVersion, Role, TideWindow, Tug, TugAssignment, User
+from .schemas import AssignTug, CloseInput, DispatchInput, IncidentInput, Login, MarginDecision, ModelVersionInput, RequestInput, Schedule, TideInput
 from .security import current_user, permitted, token_for, valid_password
 
 router = APIRouter()
@@ -47,6 +47,7 @@ def watch(user: User = read):
             'assignments': [row(item) for item in db.scalars(select(TugAssignment).order_by(TugAssignment.starts_at))],
             'incidents': [row(item) for item in db.scalars(select(DelayIncident).order_by(DelayIncident.observed_at.desc()))],
             'reviews': [row(item) for item in db.scalars(select(DispatchReview).order_by(DispatchReview.issued_at.desc()))],
+            'model_versions': [row(item) for item in model_registry.list_versions(db)],
         }
 
 
@@ -125,3 +126,32 @@ def issue_action(code: str, data: DispatchInput, user: User = supervise):
 def close_review(code: str, data: CloseInput, user: User = supervise):
     with Session.begin() as db:
         return row(incidents.close(db, user.username, code, data))
+
+
+@router.post('/delay-incidents/{code}/recompute')
+def recompute_incident(code: str, user: User = supervise):
+    with Session.begin() as db:
+        return row(incidents.recompute_score(db, user.username, code))
+
+
+@router.get('/model-versions')
+def get_model_versions(user: User = read):
+    with Session() as db:
+        return [row(item) for item in model_registry.list_versions(db)]
+
+
+@router.post('/model-versions', status_code=201)
+def stage_model(data: ModelVersionInput, user: User = supervise):
+    """训练并留存新版为 staged；校验失败不会影响当前 active 接单版本。"""
+    with Session.begin() as db:
+        return row(model_registry.register(db, user.username, data.code, data.seed, data.note))
+
+
+@router.post('/model-versions/{code}/activate')
+def activate_model(code: str, user: User = supervise):
+    with Session.begin() as db:
+        version, failure = model_registry.activate(db, user.username, code)
+        output = row(version)
+    if failure:
+        raise failure
+    return output

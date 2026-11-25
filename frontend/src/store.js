@@ -3,6 +3,7 @@ export const requestStates = {requested: '待核验', tug_reserved: '已预约�
 export const incidentStates = {queued: '待计算', failed: '计算失败', margin_review: '待人工复核', ready: '待发布指令', actioned: '待复盘', closed: '已结案'};
 export const decisions = {routine: '常规跟踪', priority: '优先处置'};
 export const actions = {monitor: '继续跟踪', standby: '拖轮待命', retime: '通知改期'};
+export const modelStates = {staged: '待校验留存', active: '接单中', retired: '已停用留存', damaged: '损坏不可复现'};
 
 function restoreSession() {
   try { return JSON.parse(sessionStorage.getItem('berth-session')); }
